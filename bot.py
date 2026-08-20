@@ -21,7 +21,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 # SETTINGS
 # ============================================================
 
-BOT_TOKEN = "PUT_YOUR_NEW_BOT_TOKEN_HERE"
+BOT_TOKEN = "8081503498:AAEDPFycjm7xmn9cnNOTIK9-s28X56d7KiE"
 
 ADMIN_ID = 123456789
 

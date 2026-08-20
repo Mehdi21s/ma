@@ -28,7 +28,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7692023421"))
-FORCE_CHANNEL = os.getenv("FORCE_CHANNEL", "@safa2vz").strip()
+FORCE_CHANNEL = os.getenv("FORCE_CHANNEL", "@THEASYLUM2").strip()
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "@huxmh").strip()
 PROXY_URL = os.getenv("PROXY_URL", "socks5://127.0.0.1:10808").strip() or None
 DB_NAME = os.getenv("DB_NAME", "bot.db").strip()

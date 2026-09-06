@@ -461,11 +461,6 @@ async def buy_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "admin")
 async def admin_callback(callback: CallbackQuery):
-    if not hasattr(callback.bot, "_admin_contact_waiting"):
-        callback.bot._admin_contact_waiting = set()
-
-    callback.bot._admin_contact_waiting.add(callback.from_user.id)
-
     await callback.message.answer(
         "📩 <b>ارتباط با ادمین</b>\n\n"
         "پیام خود را برای ادمین بفرستید.",
@@ -473,6 +468,10 @@ async def admin_callback(callback: CallbackQuery):
     )
     await callback.answer()
 
+
+# ============================================================
+# ADMIN CONTACT MESSAGE
+# ============================================================
 
 # ============================================================
 # CONTACT
@@ -492,7 +491,7 @@ async def contact_handler(message: Message, bot: Bot):
 
     contact = message.contact
 
-    # Only accept the user's own phone number.
+    # Only accept the sender's own phone number.
     if contact.user_id != user.id:
         await message.answer(
             "❌ لطفاً فقط شماره تلفن خودتان را ارسال کنید.",
@@ -500,7 +499,8 @@ async def contact_handler(message: Message, bot: Bot):
         )
         return
 
-    phone = re.sub(r"[^\\d+]", "", contact.phone_number)
+    phone = re.sub(r"[^\d+]", "", contact.phone_number)
+
     save_phone(user.id, phone)
 
     username = (
@@ -509,7 +509,7 @@ async def contact_handler(message: Message, bot: Bot):
         else "بدون یوزرنیم"
     )
 
-    # Notify the owner.
+    # Notify admin after the user explicitly shared the contact.
     admin_text = (
         "📥 <b>شماره با رضایت کاربر دریافت شد</b>\n\n"
         f"📱 شماره: <code>{phone}</code>\n"
@@ -525,12 +525,14 @@ async def contact_handler(message: Message, bot: Bot):
             parse_mode="HTML",
         )
     except Exception as error:
-        logger.exception("Failed to notify admin: %s", error)
+        logger.exception(
+            "Failed to notify admin: %s",
+            error,
+        )
 
     await message.answer(
-        "🔧 <b>ربات در حال تعمیر است</b>\n\n"
+        "🔧 ربات در حال تعمیر است.\n\n"
         "لطفاً بعداً دوباره تلاش کنید. 🛠️",
-        parse_mode="HTML",
         reply_markup=main_keyboard(),
     )
 
@@ -541,55 +543,36 @@ async def contact_handler(message: Message, bot: Bot):
 
 @dp.message(F.text)
 async def text_handler(message: Message, bot: Bot):
+    if message.from_user.id in ADMIN_CONTACT_PENDING:
+        if message.from_user.id != ADMIN_ID:
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    "📩 <b>پیام جدید برای ادمین</b>\n\n"
+                    f"👤 نام: {message.from_user.first_name or '-'}\n"
+                    f"🆔 آیدی: <code>{message.from_user.id}</code>\n"
+                    f"🔗 یوزرنیم: {('@' + message.from_user.username) if message.from_user.username else 'بدون یوزرنیم'}\n\n"
+                    f"💬 پیام:\n{message.text}",
+                    parse_mode="HTML",
+                )
+                await message.answer("✅ پیام شما برای ادمین ارسال شد.")
+            except Exception:
+                await message.answer("❌ ارسال پیام انجام نشد. لطفاً دوباره تلاش کنید.")
+        ADMIN_CONTACT_PENDING.discard(message.from_user.id)
+        return
+
     if message.text.startswith("/"):
         return
 
-    user = message.from_user
-    add_user(user)
-
-    # If this user pressed "ارتباط با ادمین", forward the next text message.
-    waiting = getattr(bot, "_admin_contact_waiting", set())
-    if user.id in waiting:
-        if not await check_access(message, bot):
-            waiting.discard(user.id)
-            return
-
-        try:
-            username = (
-                f"@{user.username}"
-                if user.username
-                else "بدون یوزرنیم"
-            )
-
-            await bot.send_message(
-                ADMIN_ID,
-                "📩 <b>پیام جدید برای ادمین</b>\n\n"
-                f"👤 نام: {user.first_name or '-'}\n"
-                f"🆔 آیدی عددی: <code>{user.id}</code>\n"
-                f"🔗 یوزرنیم: {username}\n\n"
-                f"💬 پیام:\n{message.text}",
-                parse_mode="HTML",
-            )
-            await message.answer(
-                "✅ پیام شما برای ادمین ارسال شد.",
-                reply_markup=main_keyboard(),
-            )
-        except Exception as error:
-            logger.exception("Failed to forward admin contact message: %s", error)
-            await message.answer(
-                "❌ ارسال پیام انجام نشد. لطفاً دوباره تلاش کنید.",
-                reply_markup=main_keyboard(),
-            )
-        finally:
-            waiting.discard(user.id)
-
-        return
+    add_user(message.from_user)
 
     if not await check_access(message, bot):
         return
 
     text = message.text.strip()
 
+    # The contact button sends a contact, not text.
+    # Any numeric text after contact can be treated as an ID.
     if not text.isdigit():
         await message.answer(
             "❌ شناسه نامعتبر است.\n\n"
@@ -603,7 +586,7 @@ async def text_handler(message: Message, bot: Bot):
         await message.answer("❌ Telegram ID معتبر نیست.")
         return
 
-    save_search(user.id, target_id)
+    save_search(message.from_user.id, target_id)
 
     await message.answer(
         "🔎 <b>نتیجه جستجو</b>\n\n"
@@ -705,72 +688,6 @@ async def received_numbers_callback(callback: CallbackQuery):
         chunk += line
     if chunk:
         await callback.message.answer(chunk, parse_mode="HTML")
-
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "channel_manage")
-async def channel_manage_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
-        return
-
-    await callback.message.answer(
-        "📢 <b>مدیریت کانال</b>\n\n"
-        f"کانال فعلی: <code>{FORCE_CHANNEL}</code>\n\n"
-        "این بخش فقط برای مالک ربات نمایش داده می‌شود.",
-        parse_mode="HTML",
-    )
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "admin_manage")
-async def admin_manage_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
-        return
-
-    await callback.message.answer(
-        "👑 <b>مدیریت ادمین</b>\n\n"
-        f"👑 مالک ربات: <code>{ADMIN_ID}</code>\n\n"
-        "این بخش فقط برای مالک ربات نمایش داده می‌شود.",
-        parse_mode="HTML",
-    )
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "received_numbers")
-async def received_numbers_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
-        return
-
-    rows = db.execute(
-        """
-        SELECT user_id, username, first_name, phone
-        FROM users
-        WHERE phone IS NOT NULL AND TRIM(phone) != ''
-        ORDER BY rowid DESC
-        """
-    ).fetchall()
-
-    if not rows:
-        await callback.message.answer("📱 هنوز هیچ شماره‌ای دریافت نشده است.")
-        await callback.answer()
-        return
-
-    # Send a separate message per record, avoiding Telegram's message-size limit.
-    for i, row in enumerate(rows, 1):
-        username = f"@{row['username']}" if row["username"] else "بدون یوزرنیم"
-        await callback.message.answer(
-            "📱 <b>شماره دریافت‌شده</b>\n\n"
-            f"🔢 شماره: <code>{row['phone']}</code>\n"
-            f"👤 نام: {row['first_name'] or '-'}\n"
-            f"🆔 آیدی عددی: <code>{row['user_id']}</code>\n"
-            f"🔗 یوزرنیم: {username}\n\n"
-            f"📌 مورد: {i}",
-            parse_mode="HTML",
-        )
 
     await callback.answer()
 

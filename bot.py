@@ -177,7 +177,10 @@ def get_all_users():
 # BOT
 # ============================================================
 
-dp = Dispatcher()\n\n# Users who are currently writing a message to the admin\nadmin_message_mode = set()
+dp = Dispatcher()
+
+# Users who are currently writing a message to the admin
+admin_message_mode = set()
 
 
 # ============================================================

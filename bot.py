@@ -26,9 +26,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-ADMIN_ID = int(os.getenv("ADMIN_ID", "7692023421"))
-FORCE_CHANNEL = os.getenv("FORCE_CHANNEL", "@THEASYLUM2").strip()
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "@huxmh").strip()
+ADMIN_ID = int(os.getenv("ADMIN_ID", "8718566270"))
+FORCE_CHANNEL = os.getenv("FORCE_CHANNEL", "@safa2vz").strip()
 PROXY_URL = os.getenv("PROXY_URL", "socks5://127.0.0.1:10808").strip() or None
 DB_NAME = os.getenv("DB_NAME", "bot.db").strip()
 
@@ -85,18 +84,6 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS force_channels (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            channel TEXT UNIQUE NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    db.execute(
-        "INSERT OR IGNORE INTO force_channels (channel) VALUES (?)",
-        (FORCE_CHANNEL,),
-    )
 
     db.commit()
 
@@ -186,55 +173,11 @@ def get_all_users():
     ).fetchall()
 
 
-def get_phone_consents():
-    return db.execute(
-        """
-        SELECT p.id, p.user_id, p.phone, p.created_at,
-               u.username, u.first_name
-        FROM phone_consents p
-        LEFT JOIN users u ON u.user_id = p.user_id
-        ORDER BY p.id DESC
-        """
-    ).fetchall()
-
-
-def get_force_channels():
-    return db.execute(
-        "SELECT id, channel FROM force_channels ORDER BY id ASC"
-    ).fetchall()
-
-
-def add_force_channel(channel):
-    channel = channel.strip()
-    if not channel:
-        return False
-    if not channel.startswith("@") and not channel.lstrip("-").isdigit():
-        channel = "@" + channel
-    try:
-        db.execute(
-            "INSERT INTO force_channels (channel) VALUES (?)",
-            (channel,),
-        )
-        db.commit()
-        return True
-    except sqlite3.IntegrityError:
-        return False
-
-
-def remove_force_channel(channel_id):
-    db.execute(
-        "DELETE FROM force_channels WHERE id = ?",
-        (channel_id,),
-    )
-    db.commit()
-
-
 # ============================================================
 # BOT
 # ============================================================
 
-dp = Dispatcher()
-admin_channel_action = {}
+dp = Dispatcher()\n\n# Users who are currently writing a message to the admin\nadmin_message_mode = set()
 
 
 # ============================================================
@@ -336,20 +279,6 @@ def admin_keyboard():
             ],
             [
                 InlineKeyboardButton(
-                    text="📱 لیست شماره‌های دریافتی",
-                    callback_data="phone_list",
-                    style="primary",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📢 مدیریت کانال‌ها",
-                    callback_data="channel_manage",
-                    style="primary",
-                )
-            ],
-            [
-                InlineKeyboardButton(
                     text="🚫 مسدود کردن",
                     callback_data="block",
                     style="danger",
@@ -369,27 +298,21 @@ def admin_keyboard():
 # ============================================================
 
 async def check_membership(bot: Bot, user_id: int):
-    channels = get_force_channels()
-    if not channels:
-        return True
+    try:
+        member = await bot.get_chat_member(
+            chat_id=FORCE_CHANNEL,
+            user_id=user_id,
+        )
 
-    for row in channels:
-        try:
-            member = await bot.get_chat_member(
-                chat_id=row["channel"],
-                user_id=user_id,
-            )
-            if member.status not in {"member", "administrator", "creator"}:
-                return False
-        except Exception as error:
-            logger.warning(
-                "Membership check failed for %s: %s",
-                row["channel"],
-                error,
-            )
-            return False
+        return member.status in {
+            "member",
+            "administrator",
+            "creator",
+        }
 
-    return True
+    except Exception as error:
+        logger.warning("Membership check failed: %s", error)
+        return False
 
 
 async def check_access(message: Message, bot: Bot):
@@ -520,14 +443,14 @@ async def buy_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "admin")
 async def admin_callback(callback: CallbackQuery):
-    username = ADMIN_USERNAME.lstrip("@")
-
+    admin_message_mode.add(callback.from_user.id)
     await callback.message.answer(
-        "📞 <b>ارتباط با ادمین</b>\n\n"
-        f"@{username}",
+        "📩 <b>ارتباط با ادمین</b>\n\n"
+        "پیام خود را برای ادمین بفرستید.",
         parse_mode="HTML",
     )
     await callback.answer()
+
 
 
 # ============================================================
@@ -603,71 +526,43 @@ async def text_handler(message: Message, bot: Bot):
     if message.text.startswith("/"):
         return
 
-    uid = message.from_user.id
-
-    # Admin-only channel management input. Everything else continues
-    # through the original text handler below.
-    channel_action = admin_channel_action.get(uid)
-    if channel_action and is_admin(uid):
-        raw = message.text.strip()
-
-        if channel_action == "add":
-            ok = add_force_channel(raw)
-            admin_channel_action.pop(uid, None)
-            if ok:
-                display = raw if raw.startswith("@") or raw.startswith("-") else "@" + raw
-                await message.answer(
-                    f"✅ کانال <code>{display}</code> اضافه شد.",
-                    parse_mode="HTML",
-                )
-            else:
-                await message.answer("⚠️ کانال خالی است یا قبلاً ثبت شده.")
-            return
-
-        if channel_action == "remove":
-            if not raw.isdigit():
-                await message.answer("❌ فقط آیدی عددی ردیف کانال را بفرست.")
-                return
-
-            row = db.execute(
-                "SELECT channel FROM force_channels WHERE id = ?",
-                (int(raw),),
-            ).fetchone()
-            if not row:
-                await message.answer("❌ چنین کانالی پیدا نشد.")
-                return
-
-            count = db.execute(
-                "SELECT COUNT(*) AS c FROM force_channels"
-            ).fetchone()["c"]
-            if count <= 1:
-                admin_channel_action.pop(uid, None)
-                await message.answer("❌ حداقل یک کانال باید باقی بماند.")
-                return
-
-            remove_force_channel(int(raw))
-            admin_channel_action.pop(uid, None)
-            await message.answer(
-                f"✅ کانال <code>{row['channel']}</code> حذف شد.",
-                parse_mode="HTML",
-            )
-            return
-
     add_user(message.from_user)
 
     if not await check_access(message, bot):
         return
 
-    text_value = message.text.strip()
+    text = message.text.strip()
 
-    if not text_value.isdigit():
+    # Message to admin mode: forward the user's message to the current admin.
+    if message.from_user.id in admin_message_mode:
+        admin_message_mode.discard(message.from_user.id)
+        user = message.from_user
+        username = f"@{user.username}" if user.username else "بدون یوزرنیم"
+        admin_text = (
+            "📩 <b>پیام جدید برای ادمین</b>\n\n"
+            f"👤 نام: {user.first_name or '-'}\n"
+            f"🆔 آیدی: <code>{user.id}</code>\n"
+            f"🔗 یوزرنیم: {username}\n\n"
+            f"💬 پیام:\n{text}"
+        )
+        try:
+            await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML")
+            await message.answer("✅ پیام شما برای ادمین ارسال شد.", reply_markup=main_keyboard())
+        except Exception:
+            await message.answer("❌ ارسال پیام انجام نشد. دوباره تلاش کنید.", reply_markup=main_keyboard())
+        return
+
+    # The contact button sends a contact, not text.
+    # Any numeric text after contact can be treated as an ID.
+    if not text.isdigit():
         await message.answer(
             "❌ شناسه نامعتبر است.\n\n"
             "لطفاً فقط Telegram ID عددی ارسال کنید."
         )
         return
 
-    target_id = int(text_value)
+    target_id = int(text)
+
     if target_id <= 0:
         await message.answer("❌ Telegram ID معتبر نیست.")
         return
@@ -678,7 +573,8 @@ async def text_handler(message: Message, bot: Bot):
         "🔎 <b>نتیجه جستجو</b>\n\n"
         f"🆔 آیدی: <code>{target_id}</code>\n\n"
         "ℹ️ Telegram Bot API صرفاً با داشتن یک Telegram ID "
-        "نمی‌تواند شماره تلفن یا اطلاعات خصوصی صاحب حساب را استخراج کند.",
+        "نمی‌تواند شماره تلفن یا اطلاعات خصوصی صاحب حساب را "
+        "استخراج کند.",
         parse_mode="HTML",
     )
 
@@ -693,6 +589,42 @@ def is_admin(user_id):
 
 @dp.message(Command("admin"))
 async def admin_command(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ دسترسی غیرمجاز.")
+        return
+
+    await message.answer(
+        "🛠 <b>پنل مدیریت</b>",
+        parse_mode="HTML",
+        reply_markup=admin_keyboard(),
+    )
+
+
+@dp.callback_query(F.data == "admin_stats")
+async def admin_stats_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "⛔ دسترسی غیرمجاز.",
+            show_alert=True,
+        )
+        return
+
+    users, searches, blocked, phones = get_stats()
+
+    await callback.message.answer(
+        "📊 <b>آمار ربات</b>\n\n"
+        f"👥 کاربران: <b>{users}</b>\n"
+        f"🔎 جستجوها: <b>{searches}</b>\n"
+        f"📱 شماره‌های ثبت‌شده با رضایت: <b>{phones}</b>\n"
+        f"🚫 مسدود: <b>{blocked}</b>",
+        parse_mode="HTML",
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "block")
+async def block_callback(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer(
             "⛔ دسترسی غیرمجاز.",

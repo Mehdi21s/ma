@@ -28,12 +28,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Railway injects Variables as environment variables. Accept the standard key
-# and a common alias, and tolerate accidental surrounding quotes/whitespace.
-BOT_TOKEN = (
-    os.getenv("BOT_TOKEN", "").strip()
-    or os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-).strip().strip("\"'").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 # Set ADMIN_ID in Railway Variables to your own numeric Telegram user ID.
 # The fallback preserves the original configured owner if the variable is absent.
 try:
@@ -70,13 +65,7 @@ except OSError as error:
 DB_NAME = str(DB_PATH)
 
 if not BOT_TOKEN or BOT_TOKEN == "PUT_YOUR_NEW_BOT_TOKEN_HERE":
-    # Never print the token itself in logs or exceptions.
-    raise RuntimeError(
-        "توکن در محیط اجرای برنامه پیدا نشد. در همان Railway Service که bot.py را اجرا می‌کند، "
-        "Variables را باز کن و دقیقاً BOT_TOKEN را با مقدار توکن قرار بده؛ سپس Save/Deploy کن. "
-        "اگر متغیر را همین الان اضافه کرده‌ای، بررسی کن Deploy مربوط به همان Environment/Service باشد. "
-        "نام جایگزین پشتیبانی‌شده: TELEGRAM_BOT_TOKEN."
-    )
+    raise RuntimeError("BOT_TOKEN را در فایل .env قرار بده.")
 
 
 # ============================================================
@@ -756,7 +745,7 @@ async def contact_handler(message: Message, bot: Bot):
 # ID SEARCH
 # ============================================================
 
-@dp.message(F.text)
+@dp.message(F.text & ~F.text.startswith("/"))
 async def text_handler(message: Message, bot: Bot):
     user_id = message.from_user.id
 
@@ -803,17 +792,30 @@ async def text_handler(message: Message, bot: Bot):
 
         if action == "channel_add":
             raw = value.strip()
-            match = re.fullmatch(r"(?:https?://)?t\.me/([A-Za-z0-9_]{5,})/?", raw)
-            if raw.startswith("@") and re.fullmatch(r"@[A-Za-z0-9_]{5,}", raw):
-                username = raw[1:]
+            # Public channel/group: @username or https://t.me/username
+            # Private channel/group: numeric chat ID | invite URL
+            parts = [part.strip() for part in raw.split("|", 1)]
+            match = re.fullmatch(r"(?:https?://)?t\\.me/([A-Za-z0-9_]{5,})/?", parts[0])
+            if parts[0].startswith("@") and re.fullmatch(r"@[A-Za-z0-9_]{5,}", parts[0]):
+                username = parts[0][1:]
+                channel_id = "@" + username
+                join_url = "https://t.me/" + username
             elif match:
                 username = match.group(1)
+                channel_id = "@" + username
+                join_url = "https://t.me/" + username
+            elif re.fullmatch(r"-100\\d{5,}", parts[0]) and len(parts) == 2 and re.match(r"https://t\\.me/\\+", parts[1]):
+                channel_id = parts[0]
+                join_url = parts[1]
             else:
-                await message.answer("❌ ورودی معتبر نیست. یک یوزرنیم عمومی مثل @mychannel یا لینک https://t.me/mychannel بفرست.")
+                await message.answer(
+                    "❌ ورودی معتبر نیست. برای کانال عمومی @username یا لینک t.me بفرست.\\n"
+                    "برای گروه/کانال خصوصی، آیدی عددی و لینک دعوت را با | جدا کن:\\n"
+                    "<code>-1001234567890 | https://t.me/+InviteCode</code>",
+                    parse_mode="HTML"
+                )
                 ADMIN_ACTIONS[user_id] = "channel_add"
                 return
-            channel_id = "@" + username
-            join_url = "https://t.me/" + username
             try:
                 chat = await bot.get_chat(channel_id)
                 db.execute(
@@ -822,12 +824,15 @@ async def text_handler(message: Message, bot: Bot):
                 )
                 db.commit()
                 await message.answer(
-                    f"✅ کانال <b>{chat.title}</b> اضافه شد.\nیادت باشد ربات باید در کانال ادمین باشد.",
+                    f"✅ «{chat.title}» به فهرست عضویت اجباری اضافه شد.\\n"
+                    "ربات باید در آن کانال/گروه دسترسی ادمین داشته باشد تا عضویت را بررسی کند.",
                     parse_mode="HTML", reply_markup=channels_keyboard()
                 )
             except Exception as error:
                 logger.warning("Could not add force channel %s: %s", raw, error)
-                await message.answer("❌ کانال پیدا نشد یا ربات به آن دسترسی ندارد. مطمئن شو یوزرنیم درست است و ربات عضو کانال شده است.")
+                await message.answer(
+                    "❌ گروه/کانال پیدا نشد یا ربات دسترسی ندارد. آیدی را بررسی کن و مطمئن شو ربات عضو آن است."
+                )
                 ADMIN_ACTIONS[user_id] = "channel_add"
             return
 
@@ -1014,7 +1019,12 @@ async def channel_add_callback(callback: CallbackQuery):
         await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
         return
     ADMIN_ACTIONS[callback.from_user.id] = "channel_add"
-    await callback.message.answer("یوزرنیم کانال (مثل @mychannel) یا لینک عمومی t.me را بفرست:")
+    await callback.message.answer(
+        "برای کانال/گروه عمومی، @username یا لینک t.me را بفرست.\\n"
+        "برای کانال/گروه خصوصی، آیدی عددی و لینک دعوت را با | جدا کن:\\n"
+        "<code>-1001234567890 | https://t.me/+InviteCode</code>",
+        parse_mode="HTML"
+    )
     await callback.answer()
 
 

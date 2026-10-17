@@ -133,6 +133,17 @@ def init_db():
         )
     """)
 
+    # Temporarily remove THEASYLUM2 from forced membership.
+    # Match the channel ID or its join URL, including numeric IDs
+    # whose invite link points to this channel.
+    db.execute(
+        """
+        DELETE FROM force_channels
+        WHERE UPPER(REPLACE(channel_id, '@', '')) = 'THEASYLUM2'
+           OR UPPER(join_url) LIKE '%T.ME/THEASYLUM2%'
+        """
+    )
+
     # Preserve the configured owner. Seed the legacy channel only on a genuinely
     # fresh database; do not re-add it after the admin deliberately removes the last channel.
     db.execute("INSERT OR IGNORE INTO bot_admins (user_id) VALUES (?)", (ADMIN_ID,))

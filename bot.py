@@ -4,6 +4,7 @@ import os
 import re
 import sqlite3
 from contextlib import suppress
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession

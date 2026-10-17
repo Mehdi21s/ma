@@ -28,7 +28,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+# Railway injects Variables as environment variables. Accept the standard key
+# and a common alias, and tolerate accidental surrounding quotes/whitespace.
+BOT_TOKEN = (
+    os.getenv("BOT_TOKEN", "").strip()
+    or os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+).strip().strip("\"'").strip()
 # Set ADMIN_ID in Railway Variables to your own numeric Telegram user ID.
 # The fallback preserves the original configured owner if the variable is absent.
 try:
@@ -65,7 +70,13 @@ except OSError as error:
 DB_NAME = str(DB_PATH)
 
 if not BOT_TOKEN or BOT_TOKEN == "PUT_YOUR_NEW_BOT_TOKEN_HERE":
-    raise RuntimeError("BOT_TOKEN را در فایل .env قرار بده.")
+    # Never print the token itself in logs or exceptions.
+    raise RuntimeError(
+        "توکن در محیط اجرای برنامه پیدا نشد. در همان Railway Service که bot.py را اجرا می‌کند، "
+        "Variables را باز کن و دقیقاً BOT_TOKEN را با مقدار توکن قرار بده؛ سپس Save/Deploy کن. "
+        "اگر متغیر را همین الان اضافه کرده‌ای، بررسی کن Deploy مربوط به همان Environment/Service باشد. "
+        "نام جایگزین پشتیبانی‌شده: TELEGRAM_BOT_TOKEN."
+    )
 
 
 # ============================================================

@@ -17,6 +17,7 @@ from aiogram.types import (
     KeyboardButton,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    BotCommand,
 )
 from dotenv import load_dotenv
 
@@ -1339,6 +1340,18 @@ async def main():
             me.username,
             me.id,
         )
+
+        # Reset the Telegram command menu: remove old uploader commands.
+        commands = [
+            BotCommand(command="start", description="شروع ربات"),
+            BotCommand(command="help", description="راهنما"),
+            BotCommand(command="admin", description="پنل مدیریت"),
+            BotCommand(command="block", description="مسدود کردن کاربر (ادمین)"),
+            BotCommand(command="unblock", description="رفع مسدودی کاربر (ادمین)"),
+            BotCommand(command="broadcast", description="ارسال همگانی (ادمین)"),
+        ]
+        await telegram_call_with_retry("set_my_commands", bot.set_my_commands, commands)
+        logger.info("Telegram command menu reset: %s", [command.command for command in commands])
 
         await telegram_call_with_retry(
             "delete_webhook",

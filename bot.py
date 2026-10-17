@@ -155,7 +155,12 @@ def init_db():
     ).fetchone()
     if settings_row is None:
         channels_exist = db.execute("SELECT 1 FROM force_channels LIMIT 1").fetchone() is not None
-        if not channels_exist and existing_button_setting is None and FORCE_CHANNEL:
+        if (
+            not channels_exist
+            and existing_button_setting is None
+            and FORCE_CHANNEL
+            and "THEASYLUM2" not in FORCE_CHANNEL.upper()
+        ):
             db.execute(
                 "INSERT OR IGNORE INTO force_channels (channel_id, join_url) VALUES (?, ?)",
                 (FORCE_CHANNEL, f"https://t.me/{FORCE_CHANNEL.lstrip('@')}"),
@@ -287,8 +292,24 @@ def set_setting(key, value):
 
 
 def get_force_channels():
+    # Permanently exclude THEASYLUM2 even if an old row remains in Railway's DB.
+    # Filter both the displayed join link and the stored channel ID so it cannot
+    # appear in the join keyboard or be checked for mandatory membership.
+    db.execute(
+        """
+        DELETE FROM force_channels
+        WHERE UPPER(REPLACE(channel_id, '@', '')) LIKE '%THEASYLUM2%'
+           OR UPPER(join_url) LIKE '%THEASYLUM2%'
+        """
+    )
+    db.commit()
     return db.execute(
-        "SELECT channel_id, join_url FROM force_channels ORDER BY channel_id"
+        """
+        SELECT channel_id, join_url FROM force_channels
+        WHERE UPPER(REPLACE(channel_id, '@', '')) NOT LIKE '%THEASYLUM2%'
+          AND UPPER(join_url) NOT LIKE '%THEASYLUM2%'
+        ORDER BY channel_id
+        """
     ).fetchall()
 
 

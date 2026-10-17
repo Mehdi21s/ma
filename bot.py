@@ -29,7 +29,8 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = 8718566270
 FORCE_CHANNEL = os.getenv("FORCE_CHANNEL", "@safa2vz").strip()
-PROXY_URL = os.getenv("PROXY_URL", "socks5://127.0.0.1:10808").strip() or None
+# Proxy is disabled by default on Railway. Set PROXY_URL only if you have a reachable proxy.
+PROXY_URL = os.getenv("PROXY_URL", "").strip() or None
 # Database path: on Railway use the persistent Volume (Mount Path: /data).
 # Locally, keep bot.db beside this Python file.
 _db_filename = Path(os.getenv("DB_NAME", "bot.db").strip() or "bot.db").name

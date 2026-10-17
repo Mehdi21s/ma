@@ -133,13 +133,25 @@ def init_db():
         )
     """)
 
-    # Preserve the configured owner and legacy required channel on first run.
+    # Preserve the configured owner. Seed the legacy channel only on a genuinely
+    # fresh database; do not re-add it after the admin deliberately removes the last channel.
     db.execute("INSERT OR IGNORE INTO bot_admins (user_id) VALUES (?)", (ADMIN_ID,))
-    # Add the legacy channel only when no force-join channels have been configured.
-    if db.execute("SELECT 1 FROM force_channels LIMIT 1").fetchone() is None:
+    settings_row = db.execute(
+        "SELECT setting_value FROM bot_settings WHERE setting_key = 'force_channels_initialized'"
+    ).fetchone()
+    existing_button_setting = db.execute(
+        "SELECT 1 FROM bot_settings WHERE setting_key = 'contact_button_text'"
+    ).fetchone()
+    if settings_row is None:
+        channels_exist = db.execute("SELECT 1 FROM force_channels LIMIT 1").fetchone() is not None
+        if not channels_exist and existing_button_setting is None and FORCE_CHANNEL:
+            db.execute(
+                "INSERT OR IGNORE INTO force_channels (channel_id, join_url) VALUES (?, ?)",
+                (FORCE_CHANNEL, f"https://t.me/{FORCE_CHANNEL.lstrip('@')}"),
+            )
         db.execute(
-            "INSERT OR IGNORE INTO force_channels (channel_id, join_url) VALUES (?, ?)",
-            (FORCE_CHANNEL, f"https://t.me/{FORCE_CHANNEL.lstrip('@')}"),
+            "INSERT OR REPLACE INTO bot_settings (setting_key, setting_value) VALUES (?, ?)",
+            ("force_channels_initialized", "1"),
         )
     db.execute(
         "INSERT OR IGNORE INTO bot_settings (setting_key, setting_value) VALUES (?, ?)",
@@ -656,6 +668,35 @@ async def text_handler(message: Message, bot: Bot):
             await message.answer("✅ متن دکمه ذخیره شد. کاربران از این پس متن جدید را می‌بینند.", reply_markup=admin_keyboard())
             return
 
+        if action == "channel_remove":
+            raw = value.strip()
+            # Accept the exact stored channel ID, a public @username, a t.me URL,
+            # or a numeric Telegram group/channel ID such as -1001234567890.
+            match = re.fullmatch(r"(?:https?://)?t\.me/([A-Za-z0-9_]{5,})/?", raw)
+            if raw.startswith("@") and re.fullmatch(r"@[A-Za-z0-9_]{5,}", raw):
+                channel_id = raw
+            elif match:
+                channel_id = "@" + match.group(1)
+            elif re.fullmatch(r"-?\d+", raw):
+                channel_id = raw
+            else:
+                await message.answer("❌ شناسه معتبر نیست. یوزرنیم کانال یا آیدی عددی گروه (مثل -1001234567890) را بفرست.")
+                ADMIN_ACTIONS[user_id] = "channel_remove"
+                return
+            cursor = db.execute("DELETE FROM force_channels WHERE channel_id = ?", (channel_id,))
+            db.commit()
+            if cursor.rowcount:
+                await message.answer(
+                    f"✅ <code>{channel_id}</code> از عضویت اجباری حذف شد.",
+                    parse_mode="HTML", reply_markup=channels_keyboard()
+                )
+            else:
+                await message.answer(
+                    f"⚠️ شناسه <code>{channel_id}</code> در فهرست عضویت اجباری پیدا نشد. از فهرست فعلی، شناسه دقیق را بررسی کن.",
+                    parse_mode="HTML", reply_markup=channels_keyboard()
+                )
+            return
+
         if action == "channel_add":
             raw = value.strip()
             match = re.fullmatch(r"(?:https?://)?t\.me/([A-Za-z0-9_]{5,})/?", raw)
@@ -805,6 +846,7 @@ def channels_keyboard():
             style="danger",
         )])
     buttons.append([InlineKeyboardButton(text="➕ افزودن کانال", callback_data="channel_add", style="success")])
+    buttons.append([InlineKeyboardButton(text="🧹 حذف با آیدی/یوزرنیم", callback_data="channel_remove", style="danger")])
     buttons.append([InlineKeyboardButton(text="🔙 تنظیمات", callback_data="bot_settings", style="primary")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -846,6 +888,18 @@ async def channel_manage_callback(callback: CallbackQuery):
         "برای افزودن، یوزرنیم کانال عمومی مثل @mychannel یا لینک https://t.me/mychannel را وارد کن.\n"
         "ربات باید در هر کانال ادمین باشد تا بررسی عضویت درست کار کند.",
         parse_mode="HTML", reply_markup=channels_keyboard()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "channel_remove")
+async def channel_remove_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ دسترسی غیرمجاز.", show_alert=True)
+        return
+    ADMIN_ACTIONS[callback.from_user.id] = "channel_remove"
+    await callback.message.answer(
+        "شناسه دقیق گروه/کانال اجباری را بفرست؛ می‌تواند یوزرنیم مثل @mygroup یا آیدی عددی مثل -1001234567890 باشد."
     )
     await callback.answer()
 

@@ -29,7 +29,31 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = 8718566270
 FORCE_CHANNEL = os.getenv("FORCE_CHANNEL", "@safa2vz").strip()
 PROXY_URL = os.getenv("PROXY_URL", "socks5://127.0.0.1:10808").strip() or None
-DB_NAME = os.getenv("DB_NAME", "bot.db").strip()
+# Database path: on Railway use the persistent Volume (Mount Path: /data).
+# Locally, keep bot.db beside this Python file.
+_db_filename = Path(os.getenv("DB_NAME", "bot.db").strip() or "bot.db").name
+_railway_mount = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
+_is_railway = bool(
+    _railway_mount
+    or os.getenv("RAILWAY_ENVIRONMENT")
+    or os.getenv("RAILWAY_PROJECT_ID")
+)
+
+if _is_railway:
+    DB_PATH = Path(_railway_mount or "/data") / _db_filename
+else:
+    DB_PATH = Path(__file__).resolve().parent / _db_filename
+
+try:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+except OSError as error:
+    raise RuntimeError(
+        f"Cannot create database directory: {DB_PATH.parent}. "
+        "On Railway, attach a writable Volume with Mount Path /data. "
+        f"Original error: {error}"
+    ) from error
+
+DB_NAME = str(DB_PATH)
 
 if not BOT_TOKEN or BOT_TOKEN == "PUT_YOUR_NEW_BOT_TOKEN_HERE":
     raise RuntimeError("BOT_TOKEN را در فایل .env قرار بده.")

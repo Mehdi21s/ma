@@ -28,7 +28,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-ADMIN_ID = 8718566270
+# Set ADMIN_ID in Railway Variables to your own numeric Telegram user ID.
+# The fallback preserves the original configured owner if the variable is absent.
+try:
+    ADMIN_ID = int(os.getenv("ADMIN_ID", "8718566270").strip())
+except ValueError:
+    raise RuntimeError("ADMIN_ID باید آیدی عددی تلگرام باشد و در Railway Variables تنظیم شود.")
 FORCE_CHANNEL = os.getenv("FORCE_CHANNEL", "@safa2vz").strip()
 # Proxy is disabled by default on Railway. Set PROXY_URL only if you have a reachable proxy.
 PROXY_URL = os.getenv("PROXY_URL", "").strip() or None
@@ -1048,6 +1053,7 @@ async def add_admin_callback(callback: CallbackQuery):
 
 @dp.message(Command("admin"))
 async def admin_command(message: Message):
+    logger.info("/admin received from user_id=%s", message.from_user.id)
     if not is_admin(message.from_user.id):
         await message.answer("⛔ دسترسی غیرمجاز.")
         return

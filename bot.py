@@ -9,6 +9,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command, CommandStart
+from aiogram.exceptions import TelegramNetworkError, TelegramServerError
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -1138,8 +1139,27 @@ async def fallback_handler(message: Message):
 
 
 # ============================================================
-# MAIN
+# MAIN / TRANSIENT TELEGRAM API RETRIES
 # ============================================================
+
+async def telegram_call_with_retry(label, operation, *args, **kwargs):
+    """Retry temporary Telegram/network failures with capped exponential backoff."""
+    attempt = 0
+    while True:
+        try:
+            return await operation(*args, **kwargs)
+        except (TelegramServerError, TelegramNetworkError, asyncio.TimeoutError, OSError) as error:
+            attempt += 1
+            delay = min(5 * (2 ** min(attempt - 1, 4)), 60)
+            logger.warning(
+                "Temporary Telegram connection error during %s (attempt %s): %s. Retrying in %s seconds.",
+                label,
+                attempt,
+                error,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
 
 async def main():
     init_db()
@@ -1163,7 +1183,9 @@ async def main():
         else:
             bot = Bot(token=BOT_TOKEN)
 
-        me = await bot.get_me()
+        # Telegram may temporarily return HTTP 502 / Bad Gateway.
+        # Retry transient failures instead of exiting the bot immediately.
+        me = await telegram_call_with_retry("get_me", bot.get_me)
 
         logger.info(
             "Connected as @%s (%s)",
@@ -1171,8 +1193,10 @@ async def main():
             me.id,
         )
 
-        await bot.delete_webhook(
-            drop_pending_updates=True
+        await telegram_call_with_retry(
+            "delete_webhook",
+            bot.delete_webhook,
+            drop_pending_updates=True,
         )
 
         await dp.start_polling(bot)
